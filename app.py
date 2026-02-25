@@ -15,7 +15,6 @@ st.markdown("""
     .main { background-color: #F8F9FA; }
     h1 { color: #1E3A8A; font-family: 'Helvetica', sans-serif; }
     .stButton>button { background-color: #1E3A8A; color: white; border-radius: 5px; }
-    .stSelectbox label, .stTextInput label, .stNumberInput label { font-weight: bold; color: #1E3A8A; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -58,7 +57,6 @@ def guardar_cliente(nombre, direccion, localidad, dni_cuit, email, celular):
     })
 
 def guardar_venta(cliente_nombre, num_remito, total_costo, total_venta, ganancia, items_vendidos):
-    # Guardamos el registro contable de la venta
     db.collection("ventas").document(num_remito).set({
         "fecha": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "cliente": cliente_nombre,
@@ -73,14 +71,27 @@ def obtener_ventas():
     ventas_ref = db.collection("ventas").order_by("fecha", direction=firestore.Query.DESCENDING).stream()
     return [doc.to_dict() for doc in ventas_ref]
 
+def obtener_siguiente_remito():
+    # Busca el último número guardado y le suma 1.
+    try:
+        ventas_ref = db.collection("ventas").order_by("num_remito", direction=firestore.Query.DESCENDING).limit(1).get()
+        if ventas_ref:
+            ultimo_remito = ventas_ref[0].to_dict().get("num_remito", "")
+            if "-" in ultimo_remito:
+                partes = ultimo_remito.split("-")
+                siguiente_numero = int(partes[1]) + 1
+                return f"0001-{siguiente_numero:08d}"
+    except Exception:
+        pass
+    return "0001-00000100" # Por defecto si es la primera venta
+
 # ==========================================
-# 4. FUNCIÓN PARA GENERAR EL PDF (Seguro, sin costos)
+# 4. FUNCIÓN PARA GENERAR EL PDF
 # ==========================================
 def generar_pdf(datos_cliente, fecha, num_remito, df_items, subtotal, ajuste, total):
     pdf = FPDF()
     pdf.add_page()
     
-    # Encabezado
     pdf.set_font('Arial', 'B', 16)
     pdf.set_text_color(30, 58, 138)
     pdf.cell(0, 10, 'DISTRIBUIDORA SMV', ln=True)
@@ -90,7 +101,6 @@ def generar_pdf(datos_cliente, fecha, num_remito, df_items, subtotal, ajuste, to
     pdf.cell(0, 5, 'Buenos Aires, CABA', ln=True)
     pdf.ln(8)
     
-    # Datos Documento y Cliente
     pdf.set_font('Arial', 'B', 12)
     pdf.cell(100, 8, f'REMITO Nro: {num_remito}')
     pdf.cell(0, 8, f'Fecha: {fecha}', ln=True)
@@ -107,7 +117,6 @@ def generar_pdf(datos_cliente, fecha, num_remito, df_items, subtotal, ajuste, to
     pdf.cell(0, 8, f" Email: {datos_cliente.get('email', '')}", border='LBR', ln=True)
     pdf.ln(8)
     
-    # Tabla de productos (SOLO VENTA, NADA DE COSTOS)
     pdf.set_font('Arial', 'B', 10)
     pdf.set_fill_color(30, 58, 138)
     pdf.set_text_color(255, 255, 255)
@@ -120,14 +129,12 @@ def generar_pdf(datos_cliente, fecha, num_remito, df_items, subtotal, ajuste, to
     pdf.set_font('Arial', '', 10)
     pdf.set_text_color(0, 0, 0)
     for _, row in df_items.iterrows():
-        if str(row['Descripción']).strip() != "":
-            pdf.cell(90, 8, str(row['Descripción'])[:45], border=1)
-            pdf.cell(20, 8, str(row['Cantidad']), border=1, align='C')
-            pdf.cell(40, 8, f"${row['Precio Venta']:.2f}", border=1, align='C')
-            pdf.cell(40, 8, f"${row['Subtotal Venta']:.2f}", border=1, align='C')
-            pdf.ln()
+        pdf.cell(90, 8, str(row['Descripción'])[:45], border=1)
+        pdf.cell(20, 8, str(row['Cantidad']), border=1, align='C')
+        pdf.cell(40, 8, f"${row['Precio Venta']:.2f}", border=1, align='C')
+        pdf.cell(40, 8, f"${row['Subtotal Venta']:.2f}", border=1, align='C')
+        pdf.ln()
             
-    # Totales
     pdf.ln(5)
     pdf.set_font('Arial', 'B', 11)
     pdf.cell(150, 8, 'Subtotal:', align='R')
@@ -140,7 +147,6 @@ def generar_pdf(datos_cliente, fecha, num_remito, df_items, subtotal, ajuste, to
     pdf.cell(150, 10, 'TOTAL A PAGAR (USD):', align='R')
     pdf.cell(40, 10, f'${total:.2f}', ln=True, align='R')
     
-    # Pie de página legal
     pdf.ln(20)
     pdf.set_font('Arial', 'I', 9)
     pdf.set_text_color(100, 100, 100)
@@ -150,17 +156,41 @@ def generar_pdf(datos_cliente, fecha, num_remito, df_items, subtotal, ajuste, to
     return pdf.output(dest='S').encode('latin-1')
 
 # ==========================================
-# 5. INTERFAZ DE USUARIO CON PESTAÑAS
+# 5. INTERFAZ DE USUARIO
 # ==========================================
 st.title("📦 Sistema de Gestión SMV")
 
-# CREAMOS LAS PESTAÑAS
-tab1, tab2 = st.tabs(["🧾 Emitir Remito", "📊 Reporte de Ganancias"])
+# Creamos las 3 pestañas
+tab1, tab2, tab3 = st.tabs(["🧾 Emitir Remito", "📊 Reportes", "📦 Catálogo de Proveedor"])
 
+# --- PESTAÑA 3: CATÁLOGO ---
+with tab3:
+    st.header("📦 Listado de Productos del Proveedor")
+    
+    with st.expander("➕ Añadir nuevo producto al catálogo"):
+        c_cod = st.text_input("Código (Ej: S25-256)", key="cat_cod")
+        c_desc = st.text_input("Descripción del Producto", key="cat_desc")
+        c_costo = st.number_input("Costo Proveedor (USD)", min_value=0.0, step=10.0, key="cat_costo")
+        if st.button("Guardar Producto", type="primary"):
+            if c_cod and c_desc:
+                guardar_producto(c_cod, c_desc, c_costo)
+                st.success("Producto guardado exitosamente.")
+            else:
+                st.warning("Completa el código y la descripción.")
+                
+    prods_db = obtener_productos()
+    if prods_db:
+        lista_prods = [{"Código": k, "Descripción": v.get("descripcion", ""), "Costo Proveedor (USD)": v.get("costo", 0.0)} for k, v in prods_db.items()]
+        df_catalogo = pd.DataFrame(lista_prods)
+        st.dataframe(df_catalogo, use_container_width=True)
+        
+        csv_cat = df_catalogo.to_csv(index=False).encode('utf-8')
+        st.download_button("📥 Descargar Catálogo en Excel", data=csv_cat, file_name="Catalogo_SMV.csv", mime="text/csv")
+    else:
+        st.info("El catálogo está vacío. Cargá productos para empezar.")
+
+# --- PESTAÑA 1: REMITOS ---
 with tab1:
-    col_cliente, col_producto = st.columns(2)
-
-    # --- PANEL DE CLIENTES ---
     cat_clientes = obtener_clientes()
     opciones_clientes = ["➕ Agregar Cliente Nuevo"]
     mapa_clientes = {}
@@ -169,150 +199,143 @@ with tab1:
         opciones_clientes.append(nombre_mostrar)
         mapa_clientes[nombre_mostrar] = data
 
-    with col_cliente:
-        st.subheader("👤 Datos del Cliente")
-        cliente_seleccionado = st.selectbox("Buscar Cliente", opciones_clientes)
-        datos_actuales_cliente = {}
+    st.subheader("👤 Cliente y Remito")
+    col_c1, col_c2 = st.columns([2, 1])
+    with col_c1:
+        cliente_seleccionado = st.selectbox("Buscar Cliente", opciones_clientes, label_visibility="collapsed")
+    with col_c2:
+        num_remito_sugerido = obtener_siguiente_remito()
+        num_remito = st.text_input("Número de Remito", value=num_remito_sugerido)
         
-        if cliente_seleccionado == "➕ Agregar Cliente Nuevo":
-            with st.container(border=True):
-                n_nombre = st.text_input("Nombre y Apellido / Local")
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    n_dni = st.text_input("DNI o CUIT")
-                    n_cel = st.text_input("Celular / WhatsApp")
-                with col_b:
-                    n_loc = st.text_input("Localidad")
-                    n_dir = st.text_input("Dirección")
-                n_email = st.text_input("Email")
-                if st.button("💾 Guardar Cliente", type="primary", use_container_width=True):
-                    if n_nombre and n_cel:
-                        guardar_cliente(n_nombre, n_dir, n_loc, n_dni, n_email, n_cel)
-                        st.success("¡Cliente guardado! Actualiza la página (F5).")
-                    else:
-                        st.warning("El Nombre y el Celular son obligatorios.")
-                datos_actuales_cliente = {"nombre": n_nombre, "direccion": n_dir, "localidad": n_loc, "dni_cuit": n_dni, "email": n_email, "celular": n_cel}
-        else:
-            datos_actuales_cliente = mapa_clientes[cliente_seleccionado]
-            st.info(f"📍 {datos_actuales_cliente.get('direccion', '')}, {datos_actuales_cliente.get('localidad', '')}\n📱 Tel: {datos_actuales_cliente.get('celular', '')}")
-
-        num_remito = st.text_input("Número de Remito", value=f"0001-{datetime.now().strftime('%y%m%d%H')}")
-
-    # --- PANEL DE PRODUCTOS ---
-    with col_producto:
-        st.subheader("🛒 Catálogo Rápido")
-        with st.expander("Añadir producto nuevo a la base de datos"):
-            nuevo_codigo = st.text_input("Código Interno (Ej: S25-256)")
-            nueva_desc = st.text_input("Descripción del Producto")
-            nuevo_costo = st.number_input("Costo Proveedor (USD)", min_value=0.0, step=10.0, help="El precio al que vos lo comprás")
-            if st.button("Guardar en Catálogo"):
-                if nuevo_codigo and nueva_desc:
-                    guardar_producto(nuevo_codigo, nueva_desc, nuevo_costo)
-                    st.success("Producto guardado exitosamente.")
-                else:
-                    st.warning("Completa el código y la descripción.")
-
-    st.divider()
-
-    # --- TABLA DE FACTURACIÓN CON COSTOS ---
-    st.subheader("🧾 Detalle de Mercadería")
-
-    if 'df_items' not in st.session_state:
-        st.session_state.df_items = pd.DataFrame(
-            [{"Descripción": "", "Cantidad": 1, "Costo Unit.": 0.0, "Precio Venta": 0.0, "Subtotal Venta": 0.0}] * 5
-        )
-
-    df_editado = st.data_editor(
-        st.session_state.df_items,
-        column_config={
-            "Descripción": st.column_config.TextColumn("Descripción del Producto", width="large"),
-            "Cantidad": st.column_config.NumberColumn("Cant.", min_value=1, step=1),
-            "Costo Unit.": st.column_config.NumberColumn("Costo Prov. (USD) 🔒", min_value=0.0, format="$%.2f", help="Solo para tu control interno"),
-            "Precio Venta": st.column_config.NumberColumn("Precio Venta (USD)", min_value=0.0, format="$%.2f"),
-            "Subtotal Venta": st.column_config.NumberColumn("Subtotal", disabled=True, format="$%.2f")
-        },
-        num_rows="dynamic",
-        use_container_width=True
-    )
-
-    # Cálculos dinámicos internos
-    df_editado["Subtotal Venta"] = df_editado["Cantidad"] * df_editado["Precio Venta"]
-    df_editado["Costo Total Fila"] = df_editado["Cantidad"] * df_editado["Costo Unit."]
+    datos_actuales_cliente = {}
     
-    subtotal_venta_calculado = df_editado["Subtotal Venta"].sum()
-    costo_total_operacion = df_editado["Costo Total Fila"].sum()
+    if cliente_seleccionado == "➕ Agregar Cliente Nuevo":
+        with st.container(border=True):
+            n_nombre = st.text_input("Nombre y Apellido / Local")
+            col_a, col_b = st.columns(2)
+            with col_a:
+                n_dni = st.text_input("DNI o CUIT")
+                n_cel = st.text_input("Celular / WhatsApp")
+            with col_b:
+                n_loc = st.text_input("Localidad")
+                n_dir = st.text_input("Dirección")
+            n_email = st.text_input("Email")
+            if st.button("💾 Guardar Cliente", type="primary"):
+                if n_nombre and n_cel:
+                    guardar_cliente(n_nombre, n_dir, n_loc, n_dni, n_email, n_cel)
+                    st.success("¡Cliente guardado! Actualiza la página (F5).")
+            datos_actuales_cliente = {"nombre": n_nombre, "direccion": n_dir, "localidad": n_loc, "dni_cuit": n_dni, "email": n_email, "celular": n_cel}
+    else:
+        datos_actuales_cliente = mapa_clientes[cliente_seleccionado]
+
+    st.divider()
+    
+    # -- CARRITO DE COMPRAS --
+    st.subheader("🛒 Agregar Productos al Remito")
+    
+    mapa_prods = {v['descripcion']: v for k, v in prods_db.items()} if prods_db else {}
+    opciones_prods = ["-- Seleccione un producto --"] + list(mapa_prods.keys())
+    
+    col_sel1, col_sel2, col_sel3 = st.columns([2, 1, 1])
+    with col_sel1:
+        prod_seleccionado = st.selectbox("Buscar en Catálogo", opciones_prods)
+    
+    costo_sugerido = 0.0
+    if prod_seleccionado != "-- Seleccione un producto --":
+        costo_sugerido = float(mapa_prods[prod_seleccionado].get("costo", 0.0))
+        
+    with col_sel2:
+        cant_ingresar = st.number_input("Cantidad", min_value=1, step=1, value=1)
+    with col_sel3:
+        precio_venta_ingresar = st.number_input("Precio Venta (USD)", min_value=0.0, value=costo_sugerido)
+        
+    if st.button("➕ Añadir a la lista"):
+        if prod_seleccionado != "-- Seleccione un producto --":
+            if 'df_items' not in st.session_state:
+                st.session_state.df_items = []
+            st.session_state.df_items.append({
+                "Descripción": prod_seleccionado,
+                "Cantidad": cant_ingresar,
+                "Costo Unit.": costo_sugerido,
+                "Precio Venta": precio_venta_ingresar,
+                "Subtotal Venta": cant_ingresar * precio_venta_ingresar
+            })
+            st.rerun()
+        else:
+            st.warning("Por favor selecciona un producto de la lista.")
+
+    # -- TABLA DE RESULTADOS --
+    st.subheader("🧾 Detalle de Mercadería a Facturar")
+    if 'df_items' not in st.session_state:
+        st.session_state.df_items = []
+        
+    df_actual = pd.DataFrame(st.session_state.df_items)
+    
+    if not df_actual.empty:
+        df_editado = st.data_editor(
+            df_actual,
+            column_config={
+                "Descripción": st.column_config.TextColumn("Descripción", width="large", disabled=True),
+                "Cantidad": st.column_config.NumberColumn("Cant.", min_value=1),
+                "Costo Unit.": st.column_config.NumberColumn("Costo Prov. (USD) 🔒", format="$%.2f", disabled=True),
+                "Precio Venta": st.column_config.NumberColumn("Precio Venta (USD)", format="$%.2f"),
+                "Subtotal Venta": st.column_config.NumberColumn("Subtotal", format="$%.2f", disabled=True)
+            },
+            num_rows="dynamic",
+            use_container_width=True
+        )
+        
+        df_editado["Subtotal Venta"] = df_editado["Cantidad"] * df_editado["Precio Venta"]
+        df_editado["Costo Total Fila"] = df_editado["Cantidad"] * df_editado["Costo Unit."]
+        
+        st.session_state.df_items = df_editado.drop(columns=["Costo Total Fila"], errors='ignore').to_dict('records')
+        
+        subtotal_venta = df_editado["Subtotal Venta"].sum()
+        costo_total = df_editado["Costo Total Fila"].sum()
+    else:
+        st.info("La lista está vacía. Usa el buscador de arriba para agregar productos.")
+        subtotal_venta = 0.0
+        costo_total = 0.0
 
     st.divider()
 
-    # --- TOTALES Y GENERACIÓN DE PDF ---
     col_tot1, col_tot2 = st.columns([3, 1])
     with col_tot2:
-        st.write(f"**Subtotal Venta:** ${subtotal_venta_calculado:.2f}")
+        st.write(f"**Subtotal Venta:** ${subtotal_venta:.2f}")
         ajuste = st.number_input("Ajuste / Descuento (USD)", value=0.0, step=5.0)
-        total_final = subtotal_venta_calculado + ajuste
-        ganancia_operacion = total_final - costo_total_operacion
+        total_final = subtotal_venta + ajuste
+        ganancia_operacion = total_final - costo_total
         
         st.markdown(f"### TOTAL A COBRAR: ${total_final:.2f}")
 
     if st.button("📄 Generar Remito PDF y Registrar Venta", type="primary", use_container_width=True):
-        nombre_validacion = datos_actuales_cliente.get('nombre', '')
-        if not nombre_validacion:
-            st.error("⚠️ Selecciona el nombre del cliente arriba.")
+        if not datos_actuales_cliente.get('nombre', ''):
+            st.error("⚠️ Falta el cliente.")
+        elif df_actual.empty:
+            st.warning("⚠️ No has agregado productos.")
         else:
-            df_limpio = df_editado[df_editado["Descripción"].str.strip() != ""]
-            if df_limpio.empty:
-                st.warning("⚠️ No has agregado ningún producto al remito.")
-            else:
-                fecha_actual = datetime.now().strftime("%d/%m/%Y")
-                
-                # 1. Registrar en Base de Datos (Firebase)
-                items_lista = df_limpio.to_dict('records')
-                guardar_venta(nombre_validacion, num_remito, costo_total_operacion, total_final, ganancia_operacion, items_lista)
-                
-                # 2. Generar el PDF
-                pdf_bytes = generar_pdf(datos_actuales_cliente, fecha_actual, num_remito, df_limpio, subtotal_venta_calculado, ajuste, total_final)
-                
-                st.success(f"¡Venta registrada! Ganancia estimada: ${ganancia_operacion:.2f} USD")
-                st.download_button(
-                    label="⬇️ Descargar PDF para el Cliente",
-                    data=pdf_bytes,
-                    file_name=f"Remito_SMV_{nombre_validacion.replace(' ', '_')}.pdf",
-                    mime="application/pdf"
-                )
+            fecha_actual = datetime.now().strftime("%d/%m/%Y")
+            guardar_venta(datos_actuales_cliente['nombre'], num_remito, costo_total, total_final, ganancia_operacion, st.session_state.df_items)
+            
+            pdf_bytes = generar_pdf(datos_actuales_cliente, fecha_actual, num_remito, df_editado, subtotal_venta, ajuste, total_final)
+            
+            st.success(f"¡Registrado! Ganancia: ${ganancia_operacion:.2f} USD")
+            st.download_button("⬇️ Descargar PDF", data=pdf_bytes, file_name=f"Remito_{num_remito}.pdf", mime="application/pdf")
+            
+            if st.button("Limpiar para nueva venta"):
+                st.session_state.df_items = []
+                st.rerun()
 
 # --- PESTAÑA 2: REPORTES ---
 with tab2:
     st.header("📊 Inteligencia de Negocios")
-    st.write("Historial de operaciones y cálculo de ganancias netas.")
-    
-    if st.button("🔄 Actualizar Datos"):
-        st.rerun()
-        
     ventas_historicas = obtener_ventas()
     
     if ventas_historicas:
         df_ventas = pd.DataFrame(ventas_historicas)
-        
-        # Metricas Clave
         m1, m2, m3 = st.columns(3)
-        m1.metric("Ingresos Totales (Cobrado)", f"${df_ventas['venta_total'].sum():.2f}")
-        m2.metric("Costo de Mercadería (Pagado)", f"${df_ventas['costo_total'].sum():.2f}")
-        m3.metric("Ganancia Neta (Bolsillo)", f"${df_ventas['ganancia_neta'].sum():.2f}")
+        m1.metric("Ingresos Totales", f"${df_ventas['venta_total'].sum():.2f}")
+        m2.metric("Costo de Mercadería", f"${df_ventas['costo_total'].sum():.2f}")
+        m3.metric("Ganancia Neta", f"${df_ventas['ganancia_neta'].sum():.2f}")
         
-        st.divider()
-        st.subheader("Historial Detallado")
-        
-        # Ocultar la columna de items detallados para la vista de tabla para que sea más limpia
-        df_mostrar = df_ventas[['fecha', 'num_remito', 'cliente', 'costo_total', 'venta_total', 'ganancia_neta']]
-        st.dataframe(df_mostrar, use_container_width=True)
-        
-        # Exportar a Excel (CSV)
-        csv_export = df_mostrar.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="📥 Descargar Reporte Completo en Excel (CSV)",
-            data=csv_export,
-            file_name=f"Reporte_Ganancias_SMV_{datetime.now().strftime('%Y%m%d')}.csv",
-            mime="text/csv",
-        )
-    else:
-        st.info("Todavía no hay ventas registradas. Generá tu primer remito para ver las estadísticas acá.")
+        st.dataframe(df_ventas[['fecha', 'num_remito', 'cliente', 'costo_total', 'venta_total', 'ganancia_neta']], use_container_width=True)
