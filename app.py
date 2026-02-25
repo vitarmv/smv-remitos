@@ -152,7 +152,7 @@ def generar_pdf(datos_cliente, fecha, num_remito, df_items, subtotal, ajuste, to
     pdf.cell(0, 5, 'Remito interno de control de mercaderia. Garantia oficial 6 meses.', align='C', ln=True)
     pdf.cell(0, 5, 'Los valores expresados son netos. Pagos en USD billete o USDT.', align='C')
     
-    return pdf.output(dest='S').encode('latin-1')
+    return bytes(pdf.output())
 
 # ==========================================
 # 5. INTERFAZ DE USUARIO
