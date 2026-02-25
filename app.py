@@ -72,7 +72,6 @@ def obtener_ventas():
     return [doc.to_dict() for doc in ventas_ref]
 
 def obtener_siguiente_remito():
-    # Busca el último número guardado y le suma 1.
     try:
         ventas_ref = db.collection("ventas").order_by("num_remito", direction=firestore.Query.DESCENDING).limit(1).get()
         if ventas_ref:
@@ -83,7 +82,7 @@ def obtener_siguiente_remito():
                 return f"0001-{siguiente_numero:08d}"
     except Exception:
         pass
-    return "0001-00000100" # Por defecto si es la primera venta
+    return "0001-00000100"
 
 # ==========================================
 # 4. FUNCIÓN PARA GENERAR EL PDF
@@ -160,7 +159,6 @@ def generar_pdf(datos_cliente, fecha, num_remito, df_items, subtotal, ajuste, to
 # ==========================================
 st.title("📦 Sistema de Gestión SMV")
 
-# Creamos las 3 pestañas
 tab1, tab2, tab3 = st.tabs(["🧾 Emitir Remito", "📊 Reportes", "📦 Catálogo de Proveedor"])
 
 # --- PESTAÑA 3: CATÁLOGO ---
@@ -253,7 +251,10 @@ with tab1:
         if prod_seleccionado != "-- Seleccione un producto --":
             if 'df_items' not in st.session_state:
                 st.session_state.df_items = []
+            
+            # Se agrega con el tilde de "Quitar" en False por defecto
             st.session_state.df_items.append({
+                "Quitar": False,
                 "Descripción": prod_seleccionado,
                 "Cantidad": cant_ingresar,
                 "Costo Unit.": costo_sugerido,
@@ -272,22 +273,34 @@ with tab1:
     df_actual = pd.DataFrame(st.session_state.df_items)
     
     if not df_actual.empty:
+        # num_rows="fixed" evita que se cree un renglón vacío al final
         df_editado = st.data_editor(
             df_actual,
             column_config={
+                "Quitar": st.column_config.CheckboxColumn("🗑️ Quitar", default=False),
                 "Descripción": st.column_config.TextColumn("Descripción", width="large", disabled=True),
                 "Cantidad": st.column_config.NumberColumn("Cant.", min_value=1),
                 "Costo Unit.": st.column_config.NumberColumn("Costo Prov. (USD) 🔒", format="$%.2f", disabled=True),
                 "Precio Venta": st.column_config.NumberColumn("Precio Venta (USD)", format="$%.2f"),
                 "Subtotal Venta": st.column_config.NumberColumn("Subtotal", format="$%.2f", disabled=True)
             },
-            num_rows="dynamic",
+            num_rows="fixed", 
             use_container_width=True
         )
         
+        # Procesar si el usuario tildó la opción de Quitar en alguna fila
+        if df_editado["Quitar"].any():
+            # Filtramos dejando solo los que NO están tildados para quitar
+            df_restante = df_editado[df_editado["Quitar"] == False].copy()
+            # Guardamos el estado limpio y recargamos
+            st.session_state.df_items = df_restante.to_dict('records')
+            st.rerun()
+        
+        # Recálculo normal si no se eliminó nada
         df_editado["Subtotal Venta"] = df_editado["Cantidad"] * df_editado["Precio Venta"]
         df_editado["Costo Total Fila"] = df_editado["Cantidad"] * df_editado["Costo Unit."]
         
+        # Guardar en memoria omitiendo la columna temporal de costo total
         st.session_state.df_items = df_editado.drop(columns=["Costo Total Fila"], errors='ignore').to_dict('records')
         
         subtotal_venta = df_editado["Subtotal Venta"].sum()
@@ -317,6 +330,7 @@ with tab1:
             fecha_actual = datetime.now().strftime("%d/%m/%Y")
             guardar_venta(datos_actuales_cliente['nombre'], num_remito, costo_total, total_final, ganancia_operacion, st.session_state.df_items)
             
+            # Pasamos df_editado al PDF (la función PDF ignora la columna 'Quitar' automáticamente)
             pdf_bytes = generar_pdf(datos_actuales_cliente, fecha_actual, num_remito, df_editado, subtotal_venta, ajuste, total_final)
             
             st.success(f"¡Registrado! Ganancia: ${ganancia_operacion:.2f} USD")
